@@ -1,145 +1,109 @@
+from __future__ import annotations
 import os
-import re
-from reportlab.platypus import SimpleDocTemplate, Paragraph
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+import sys
+import logging
+from typing import List
+from typing_extensions import Final
 
-import arabic_reshaper
-from bidi.algorithm import get_display
+from pdf_core import (
+    estimate_chunk_count,
+    process_text_to_pdf,
+)
 
-# ========================= تنظیمات =========================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-INPUT_DIR  = os.path.join(BASE_DIR, "input_txt")
-OUTPUT_DIR = os.path.join(BASE_DIR, "output_pdf")
-FONT_PATH  = os.path.join(BASE_DIR, "Vazirmatn-Regular.ttf")
-
-TARGET_PDF_SIZE = 20 * 1024 * 1024   # 20MB
-SAFETY_RATIO    = 0.85
-# ===========================================================
+# ===================== Config =====================
+FONT_PATH: Final[str] = "Vazirmatn-Regular.ttf"
+INPUT_DIR: Final[str] = "input_txt"
+OUTPUT_DIR: Final[str] = "output_pdf"
+MAX_PDF_MB: Final[int] = 20
+# ================================================
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-if not os.path.exists(FONT_PATH):
-    raise FileNotFoundError(" Font file must be placed next to the script.❌ ")
-
-pdfmetrics.registerFont(TTFont("Vazir", FONT_PATH))
-
-styles = getSampleStyleSheet()
-styles.add(ParagraphStyle(
-    name="RTL",
-    fontName="Vazir",
-    fontSize=10,
-    leading=14,
-    alignment=2,  # RIGHT
-))
-
-# ---------- Regex ----------
-PERSIAN_RE = r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+'
-LATIN_RE   = r'[A-Za-z0-9@:/._\-]+'
-
-# فارسی | لاتین | علائم نگارشی
-TOKEN_RE = re.compile(
-    rf'({PERSIAN_RE}|{LATIN_RE}|[^\w\s])'
+# ===================== Logging ====================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
+logger = logging.getLogger("TXT2PDF")
 
-# ---------- تشخیص خطوط حساس ----------
-def is_table_line(line: str) -> bool:
-    line = line.strip()
-    return (
-        '|' in line
-        or line.startswith(':---')
-        or line.startswith('---')
-    )
+# ===================== Progress Bar ===============
+def render_progress(current: int, total: int, width: int = 30) -> None:
+    ratio = current / total if total else 1
+    filled = int(ratio * width)
+    bar = "█" * filled + "─" * (width - filled)
+    percent = int(ratio * 100)
+    print(f"\r[{bar}] {percent:3d}% ({current}/{total})", end="", flush=True)
+    if current == total:
+        print()
 
-# ---------- پردازش امن خط ----------
-def process_line_safe(line: str) -> str:
-    if is_table_line(line):
-        # جدول / Markdown را دست نزن
-        return line
+# ===================== Main =======================
+def main() -> None:
+    logger.info("Starting TXT to PDF conversion...")
 
-    tokens = TOKEN_RE.findall(line)
-    visual = []
-
-    for tok in tokens:
-        if re.search(PERSIAN_RE, tok):
-            reshaped = arabic_reshaper.reshape(tok)
-            visual.append(get_display(reshaped))
-        else:
-            visual.append(tok)
-
-    # پاراگراف RTL است
-    return "".join(visual[::-1])
-
-# ---------- تقسیم متن بر اساس حجم ----------
-def split_by_estimated_size(lines):
-    max_bytes = TARGET_PDF_SIZE * SAFETY_RATIO
-
-    chunks = []
-    current = []
-    size = 0
-
-    for line in lines:
-        b = len(line.encode("utf-8"))
-        if size + b > max_bytes and current:
-            chunks.append(current)
-            current = []
-            size = 0
-        current.append(line)
-        size += b
-
-    if current:
-        chunks.append(current)
-
-    return chunks
-
-# ---------- تبدیل TXT به PDF ----------
-def txt_to_pdf(txt_path):
-    base = os.path.splitext(os.path.basename(txt_path))[0]
-
-    with open(txt_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    chunks = split_by_estimated_size(lines)
-
-    for i, chunk in enumerate(chunks, start=1):
-        name = f"{base}_part_{i}.pdf" if len(chunks) > 1 else f"{base}.pdf"
-        out_path = os.path.join(OUTPUT_DIR, name)
-
-        doc = SimpleDocTemplate(
-            out_path,
-            pagesize=A4,
-            rightMargin=36,
-            leftMargin=36,
-            topMargin=36,
-            bottomMargin=36,
-        )
-
-        story = []
-        for line in chunk:
-            line = line.rstrip()
-            if not line:
-                story.append(Paragraph("&nbsp;", styles["RTL"]))
-            else:
-                story.append(
-                    Paragraph(process_line_safe(line), styles["RTL"])
-                )
-
-        doc.build(story)
-        print(f"{name} Is Done! ✔ ")
-
-# ---------- اجرای اصلی ----------
-def main():
-    files = [f for f in os.listdir(INPUT_DIR) if f.lower().endswith(".txt")]
-    if not files:
-        print(" No TXT files found.⚠️")
+    if not os.path.exists(FONT_PATH):
+        logger.critical("Vazir font file not found: %s", FONT_PATH)
         return
 
-    for f in files:
-        print(f"Processing : {f} ▶")
-        txt_to_pdf(os.path.join(INPUT_DIR, f))
+    try:
+        files: List[str] = [
+            f for f in os.listdir(INPUT_DIR)
+            if f.lower().endswith(".txt")
+        ]
+    except OSError as exc:
+        logger.critical("Error accessing directory '%s': %s", INPUT_DIR, exc)
+        logger.critical("Please check that the directory exists and update access permissions.")
+        return
+
+    if not files:
+        logger.warning("No .txt files found in the input directory: %s", INPUT_DIR)
+        return
+
+    for file in files:
+        logger.info("Processing file: %s", file)
+        input_path = os.path.join(INPUT_DIR, file)
+
+        try:
+            with open(input_path, "r", encoding="utf-8") as f:
+                full_text = f.read()
+        except OSError as exc:
+            logger.error("Error reading file %s: ", file, exc)
+            continue
+
+        chunk_count = estimate_chunk_count(full_text, MAX_PDF_MB)
+        chunk_size = len(full_text) // chunk_count
+
+        for i in range(chunk_count):
+            render_progress(i + 1, chunk_count)
+
+            part_text = full_text[
+                i * chunk_size : (i + 1) * chunk_size
+            ]
+
+            output_name = (
+                f"{os.path.splitext(file)[0]}_part{i+1}.pdf"
+                if chunk_count > 1
+                else f"{os.path.splitext(file)[0]}.pdf"
+            )
+
+            try:
+                process_text_to_pdf(
+                    text=part_text,
+                    output_path=os.path.join(OUTPUT_DIR, output_name),
+                    font_path=FONT_PATH,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Error in part %d of file %s: %s",
+                    i + 1,
+                    file,
+                    exc,
+                )
+
+        logger.info("Finished processing file: %s", file)
+
+    logger.info("All files have been processed.")
 
 if __name__ == "__main__":
     main()
