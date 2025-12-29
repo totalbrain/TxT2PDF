@@ -7,7 +7,7 @@ from typing_extensions import Final
 
 from pdf_core import (
     estimate_chunk_count,
-    process_text_to_pdf,
+    process_text_to_pdf
 )
 
 # ===================== Config =====================

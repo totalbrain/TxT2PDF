@@ -89,15 +89,17 @@ def build_pdf(
 
 
 # ===================== Core Processor =============
+
+
+# تابع برای پردازش فایل به PDF
 def process_text_to_pdf(
-    *,
     text: str,
     output_path: str,
-    font_path: str,
+    font_path: str
 ) -> None:
     pdfmetrics.registerFont(TTFont("Vazir", font_path))
 
-    rtl_style: ParagraphStyle = ParagraphStyle(
+    rtl_style = ParagraphStyle(
         name="RTL",
         fontName="Vazir",
         fontSize=11,

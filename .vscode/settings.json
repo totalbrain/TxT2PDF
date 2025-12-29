@@ -1,0 +1,29 @@
+{
+    "CodeGPT.apiKey": "Ollama",
+
+    
+  "files.exclude": {
+    "**/Input_txt": true,
+    "**/output_pdf": true
+  },
+
+ 
+  "search.exclude": {
+    "**/Input_txt": true,
+    "**/output_pdf": true
+  },
+
+  
+  "files.watcherExclude": {
+    "**/Input_txt/**": true,
+    "**/output_pdf/**": true
+  },
+
+  
+  "python.analysis.exclude": [
+    "**/Input_txt",
+    "**/output_pdf"
+  ],
+  
+  "pylint.args": ["--ignore=Input_txt,output_pdf"]
+}

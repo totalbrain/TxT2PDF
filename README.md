@@ -56,7 +56,7 @@ txt2pdf *.txt -d ./pdf-output
 
 Common options:
 
-```
+```bash
 --output, -o     Output PDF path
 --dir, -d        Output directory for batch
 --pagesize       Page size (A4, Letter)
