@@ -1,20 +1,21 @@
 from __future__ import annotations
+
 import os
 import sys
 import logging
 from typing import List
 from typing_extensions import Final
-
+import re
 from pdf_core import (
     estimate_chunk_count,
-    process_text_to_pdf
+    process_text_to_pdf,
 )
 
 # ===================== Config =====================
 FONT_PATH: Final[str] = "Vazirmatn-Regular.ttf"
 INPUT_DIR: Final[str] = "input_txt"
 OUTPUT_DIR: Final[str] = "output_pdf"
-MAX_PDF_MB: Final[int] = 20
+MAX_PDF_MB: Final[int] = 10
 # ================================================
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -37,6 +38,22 @@ def render_progress(current: int, total: int, width: int = 30) -> None:
     print(f"\r[{bar}] {percent:3d}% ({current}/{total})", end="", flush=True)
     if current == total:
         print()
+
+# تابع برای شناسایی و بستن تگ‌های باز
+def check_unclosed_tags(text: str) -> str:
+    unclosed_tags = re.findall(r'<([^/][^>]+)>', text)
+    for tag in unclosed_tags:
+        if not text.endswith(f"</{tag}>"):
+            text += f"</{tag}>"
+    return text
+
+# تابع برای پاکسازی تگ‌های نامعتبر
+def clean_invalid_attributes(text: str) -> str:
+    # حذف تگ‌های class و id
+    text = re.sub(r'class="[^"]+"', '', text)
+    text = re.sub(r'id="[^"]+"', '', text)
+    # می‌توانید تگ‌های نامعتبر دیگری را نیز اضافه کنید
+    return text
 
 # ===================== Main =======================
 def main() -> None:
@@ -67,6 +84,13 @@ def main() -> None:
         try:
             with open(input_path, "r", encoding="utf-8") as f:
                 full_text = f.read()
+
+            # فراخوانی برای بستن تگ‌های باز
+            full_text = check_unclosed_tags(full_text)
+
+            # پاکسازی تگ‌های نامعتبر
+            full_text = clean_invalid_attributes(full_text)
+
         except OSError as exc:
             logger.error("Error reading file %s: ", file, exc)
             continue
