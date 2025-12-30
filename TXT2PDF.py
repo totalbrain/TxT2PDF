@@ -17,7 +17,6 @@ INPUT_DIR: Final[str] = "input_txt"
 OUTPUT_DIR: Final[str] = "output_pdf"
 MAX_PDF_MB: Final[int] = 10
 # ================================================
-
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ===================== Logging ====================
@@ -28,7 +27,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("TXT2PDF")
-
 # ===================== Progress Bar ===============
 def render_progress(current: int, total: int, width: int = 30) -> None:
     ratio = current / total if total else 1
@@ -38,21 +36,45 @@ def render_progress(current: int, total: int, width: int = 30) -> None:
     print(f"\r[{bar}] {percent:3d}% ({current}/{total})", end="", flush=True)
     if current == total:
         print()
-
-# تابع برای شناسایی و بستن تگ‌های باز
+# ===================== Text Processing ===========
 def check_unclosed_tags(text: str) -> str:
+    # یافتن تمامی تگ‌های باز نشده
     unclosed_tags = re.findall(r'<([^/][^>]+)>', text)
     for tag in unclosed_tags:
         if not text.endswith(f"</{tag}>"):
             text += f"</{tag}>"
+    # اصلاح تگ‌های پارا برای اطمینان از بسته شدن آنها
+    text = re.sub(r'<para[^>]*>', '<para>', text)  # اصلاح تگ‌های پارا
+    text = re.sub(r'</para>', '</para>', text)    # اطمینان از تگ بسته
+    # trunk-ignore(git-diff-check/error)
+    # همچنین، بسته کردن تگ‌های HTML
+    text = re.sub(r'<head[^>]*>', '<head>', text)
+    text = re.sub(r'</head>', '</head>', text)
+    text = re.sub(r'<body[^>]*>', '<body>', text)
+    text = re.sub(r'</body>', '</body>', text)
+    text = re.sub(r'<html[^>]*>', '<html>', text)
+    text = re.sub(r'</html>', '</html>', text)
+    # بررسی و بستن سایر تگ‌های احتمالی
+    text = re.sub(r'<p[^>]*>', '<p>', text)
+    text = re.sub(r'</p>', '</p>', text)
+
     return text
+
+# تابع برای پاکسازی تگ‌های غیر ضروری (HTML)
+def clean_html_tags(text: str) -> str:
+    # حذف تمام تگ‌های HTML اگر نیاز نباشد
+    clean_text = re.sub(r'<[^>]*>', '', text)  # حذف تمام تگ‌های HTML
+    return clean_text
+
+# تابع برای لاگ کردن زمانی که خطا رخ می‌دهد
+def log_error_text_part(text: str, part_number: int) -> None:
+    part_preview = text[:500]  # ذخیره 500 کاراکتر اول برای بررسی
+    logger.error(f"Error in part {part_number} of file: Text causing the issue - {part_preview}")
 
 # تابع برای پاکسازی تگ‌های نامعتبر
 def clean_invalid_attributes(text: str) -> str:
-    # حذف تگ‌های class و id
     text = re.sub(r'class="[^"]+"', '', text)
     text = re.sub(r'id="[^"]+"', '', text)
-    # می‌توانید تگ‌های نامعتبر دیگری را نیز اضافه کنید
     return text
 
 # ===================== Main =======================
@@ -91,6 +113,9 @@ def main() -> None:
             # پاکسازی تگ‌های نامعتبر
             full_text = clean_invalid_attributes(full_text)
 
+            # پاکسازی تگ‌های HTML اگر لازم باشد
+            full_text = clean_html_tags(full_text)
+
         except OSError as exc:
             logger.error("Error reading file %s: ", file, exc)
             continue
@@ -105,19 +130,14 @@ def main() -> None:
                 i * chunk_size : (i + 1) * chunk_size
             ]
 
-            output_name = (
-                f"{os.path.splitext(file)[0]}_part{i+1}.pdf"
-                if chunk_count > 1
-                else f"{os.path.splitext(file)[0]}.pdf"
-            )
-
             try:
                 process_text_to_pdf(
                     text=part_text,
-                    output_path=os.path.join(OUTPUT_DIR, output_name),
+                    output_path=os.path.join(OUTPUT_DIR, f"{os.path.splitext(file)[0]}_part{i+1}.pdf"),
                     font_path=FONT_PATH,
                 )
             except Exception as exc:
+                log_error_text_part(part_text, i + 1)  # لاگ کردن متن مشکل‌دار
                 logger.error(
                     "Error in part %d of file %s: %s",
                     i + 1,
