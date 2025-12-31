@@ -93,7 +93,6 @@ def process_text_to_pdf(
         print(f"Font file not found: {font_path}")
         return
     else:
-        print(f"Font file found: {font_path}")
         try:
             # Check if the font is already registered
             if FONT_NAME not in pdfmetrics.getRegisteredFontNames():
