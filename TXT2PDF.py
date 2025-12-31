@@ -15,7 +15,7 @@ from pdf_core import estimate_chunk_count, process_text_to_pdf
 FONT_PATH: Final[str] = r".\font\Vazirmatn-Regular.ttf"
 INPUT_DIR: Final[str] = "input_txt"
 OUTPUT_DIR: Final[str] = "output_pdf"
-MAX_PDF_MB: Final[int] = 1
+MAX_PDF_MB: Final[int] = 10
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 

@@ -2,19 +2,11 @@ from __future__ import annotations
 
 import math
 import os
+import arabic_reshaper
 from typing import List, Sequence, Union
 from typing_extensions import TypeAlias, Final, TypeGuard
 from defusedxml import defuse_stdlib
-from xml.sax.saxutils import escape
-defuse_stdlib()
-
-from reportlab.platypus import (
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle,
-    SimpleDocTemplate,
-)
+from reportlab.platypus import Paragraph,Spacer,Table,TableStyle,SimpleDocTemplate
 from reportlab.platypus.flowables import Flowable
 from reportlab.lib import colors
 from reportlab.lib.styles import ParagraphStyle
@@ -22,11 +14,10 @@ from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-
-import arabic_reshaper
 from bidi.algorithm import get_display
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from xml.sax.saxutils import escape
+defuse_stdlib()
 # ===================== Types =====================
 TextLike: TypeAlias = Union[str, bytes, bytearray, memoryview]
 
@@ -104,7 +95,11 @@ def process_text_to_pdf(
     else:
         print(f"Font file found: {font_path}")
         try:
-            pdfmetrics.getFont(FONT_NAME)
+            # Check if the font is already registered
+            if FONT_NAME not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(FONT_NAME, font_path))
+            else:
+                print(f"Font {FONT_NAME} already registered.")
         except KeyError:
             pdfmetrics.registerFont(TTFont(FONT_NAME, font_path))
 
@@ -122,7 +117,7 @@ def process_text_to_pdf(
     table_buffer: List[str] = []
     in_table = False
 
-    # استفاده از ThreadPoolExecutor برای موازی‌سازی پردازش خطوط
+    # Use ThreadPoolExecutor to parallelize line processing
     with ThreadPoolExecutor() as executor:
         futures = []
         for line in lines:
@@ -145,7 +140,7 @@ def process_text_to_pdf(
             else:
                 elements.append(Spacer(1, 8))
 
-        # پردازش نتیجه‌های جدول‌ها به صورت موازی
+        # Process table results in parallel
         for future in as_completed(futures):
             table_data = future.result()
             if table_data:
