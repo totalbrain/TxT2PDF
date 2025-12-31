@@ -61,7 +61,7 @@ def process_file(filename: str) -> None:
         chunk_size = max_chunk_size
 
     futures = []
-    with ThreadPoolExecutor() as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:  # Limit threads to 4 for stability
         for i in range(chunk_count):
             start = i * chunk_size
             end = min(start + chunk_size, len(text))

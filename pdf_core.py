@@ -161,7 +161,8 @@ def process_text_to_pdf(
 
 # ===================== Chunk Estimator ===========
 def estimate_chunk_count(text: str, max_mb: int) -> int:
+    # Ensure chunk size is enough for large files (based on file size in bytes)
+    file_size = len(text.encode("utf-8"))  # size in bytes
     approx_chars = AVG_CHARS_PER_MB * max_mb
-    if approx_chars <= 0:
-        return 1
-    return max(1, math.ceil(len(text) / approx_chars))
+    return max(1, math.ceil(file_size / (approx_chars * 1024)))
+
