@@ -1,39 +1,49 @@
 from __future__ import annotations
+
 import math
+import os
 from typing import List, Sequence, Union
 from typing_extensions import TypeAlias, Final, TypeGuard
 from xml.sax.saxutils import escape
+
 from reportlab.platypus import (
     Paragraph,
     Spacer,
     Table,
-    TableStyle
+    TableStyle,
+    SimpleDocTemplate,
 )
 from reportlab.platypus.flowables import Flowable
 from reportlab.lib import colors
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_RIGHT
+from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 import arabic_reshaper
 from bidi.algorithm import get_display
 
+# ===================== Types =====================
+TextLike: TypeAlias = Union[str, bytes, bytearray, memoryview]
+
+# ===================== Constants =================
+AVG_CHARS_PER_MB: Final[int] = 500_000
+FONT_NAME: Final[str] = "Vazir"
+
+
+# ===================== Helpers ===================
 def safe_paragraph_text(text: str) -> str:
-    """
-    Escape text so ReportLab Paragraph parser never breaks
-    """
-    return escape(text, {
-        "'": "&apos;",
-        '"': "&quot;",
-    })
+    return escape(text, {"'": "&apos;", '"': "&quot;"})
 
 
+def _is_memoryview(value: TextLike) -> TypeGuard[memoryview]:
+    return isinstance(value, memoryview)
 
-# ===================== RTL Shaping ================
+
 def shape_text(text: str) -> str:
-    reshaped: TextLike = arabic_reshaper.reshape(text)
-    visual: TextLike = get_display(reshaped)
+    reshaped = arabic_reshaper.reshape(text)
+    visual = get_display(reshaped)
 
     if isinstance(visual, str):
         return visual
@@ -42,9 +52,29 @@ def shape_text(text: str) -> str:
     if _is_memoryview(visual):
         return visual.tobytes().decode("utf-8")
 
-    raise TypeError("Unexpected type returned from get_display")
+    raise TypeError("Unsupported RTL text type")
 
-# ===================== PDF Builder ================
+
+# ===================== Table =====================
+def parse_table(lines: Sequence[str]) -> List[List[str]]:
+    rows: List[List[str]] = []
+
+    for line in lines:
+        if not line.strip().startswith("|"):
+            continue
+
+        cells = [
+            shape_text(cell.strip())
+            for cell in line.strip().split("|")[1:-1]
+            if cell.strip()
+        ]
+        if cells:
+            rows.append(cells)
+
+    return rows
+
+
+# ===================== PDF Builder ===============
 def build_pdf(
     output_path: str,
     flowables: Sequence[Flowable],
@@ -60,36 +90,41 @@ def build_pdf(
     doc.build(list(flowables))
 
 
-# ===================== Core Processor =============
-elements = []
-
-
+# ===================== Core ======================
 def process_text_to_pdf(
     text: str,
     output_path: str,
-    font_path: str
+    font_path: str,
 ) -> None:
-    pdfmetrics.registerFont(TTFont("Vazir", font_path))
-    rtl_style = ParagraphStyle(
-    name="RTL",
-    fontName="Vazir",
-    fontSize=11,
-    leading=16,
-    alignment=TA_RIGHT
+    
+    if not os.path.isfile(font_path):
+        print(f"Font file not found: {font_path}")
+        return
+    else:
+        print(f"Font file found: {font_path}")
+    
+    try:
+        pdfmetrics.getFont(FONT_NAME)
+    except KeyError:
+        pdfmetrics.registerFont(TTFont(FONT_NAME, font_path))
+
+    style = ParagraphStyle(
+        name="RTL",
+        fontName=FONT_NAME,
+        fontSize=11,
+        leading=16,
+        alignment=TA_RIGHT,
     )
 
+    elements: List[Flowable] = []
     lines = text.splitlines()
+
     table_buffer: List[str] = []
     in_table = False
 
     for line in lines:
         stripped = line.strip()
-        if line.strip():
-            shaped = shape_text(line)
-            safe = safe_paragraph_text(shaped)
-            elements.append(Paragraph(safe, rtl_style))
-        else:
-            elements.append(Spacer(1, 8))
+
         if stripped.startswith("|"):
             in_table = True
             table_buffer.append(line)
@@ -103,59 +138,30 @@ def process_text_to_pdf(
                     TableStyle(
                         [
                             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                            ("FONT", (0, 0), (-1, -1), "Vazir"),
+                            ("FONT", (0, 0), (-1, -1), FONT_NAME),
                             ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
                         ]
                     )
                 )
                 elements.append(table)
-                elements.append(Paragraph("<br/>", rtl_style))
+                elements.append(Spacer(1, 8))
 
             table_buffer.clear()
             in_table = False
 
         if stripped:
-            elements.append(Paragraph(shape_text(line), rtl_style))
+            shaped = shape_text(line)
+            safe = safe_paragraph_text(shaped)
+            elements.append(Paragraph(safe, style))
         else:
-            elements.append(Paragraph("<br/>", rtl_style))
+            elements.append(Spacer(1, 8))
 
     build_pdf(output_path, elements)
 
 
-
-
-
-
-
-
-# ===================== Types =====================
-TextLike: TypeAlias = Union[str, bytes, bytearray, memoryview]
-Flowables: TypeAlias = List[Flowable]
-
-# ===================== Constants =================
-AVG_CHARS_PER_MB: Final[int] = 500_000
-
-# ===================== Type Guards ================
-def _is_memoryview(value: TextLike) -> TypeGuard[memoryview]:
-    return isinstance(value, memoryview)
- # ===================== Table Parsing ==============
-def parse_table(lines: Sequence[str]) -> List[List[str]]:
-    rows: List[List[str]] = []
-
-    for line in lines:
-        if "|" not in line:
-            continue
-        cells = [
-            shape_text(cell.strip())
-            for cell in line.strip().split("|")[1:-1]
-        ]
-        if cells:
-            rows.append(cells)
-
-    return rows
-
-# ===================== Chunk Estimator ============
+# ===================== Chunk Estimator ===========
 def estimate_chunk_count(text: str, max_mb: int) -> int:
     approx_chars = AVG_CHARS_PER_MB * max_mb
-    count = math.ceil(len(text) / approx_chars)
-    return max(1, count)
+    if approx_chars <= 0:
+        return 1
+    return max(1, math.ceil(len(text) / approx_chars))
