@@ -7,6 +7,7 @@ import math
 import re
 from typing import List
 from typing_extensions import Final
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pdf_core import estimate_chunk_count, process_text_to_pdf
 
@@ -45,6 +46,46 @@ def clean_html(text: str) -> str:
     return text
 
 
+# ===================== Processing =================
+def process_file(filename: str) -> None:
+    input_path = os.path.join(INPUT_DIR, filename)
+    base_name = os.path.splitext(filename)[0]
+
+    with open(input_path, encoding="utf-8") as f:
+        text = clean_html(f.read())
+
+    chunk_count = estimate_chunk_count(text, MAX_PDF_MB)
+    chunk_size = math.ceil(len(text) / chunk_count)
+    max_chunk_size = 50000
+    if chunk_size > max_chunk_size:
+        chunk_size = max_chunk_size
+
+    futures = []
+    with ThreadPoolExecutor() as executor:
+        for i in range(chunk_count):
+            start = i * chunk_size
+            end = min(start + chunk_size, len(text))
+            chunk_text = text[start:end]
+
+            output_pdf = os.path.join(
+                OUTPUT_DIR,
+                f"{base_name}_part{i + 1}.pdf",
+            )
+
+            # ارسال وظایف به تردها
+            futures.append(executor.submit(process_text_to_pdf, chunk_text, output_pdf, FONT_PATH))
+
+        # مانیتورینگ وضعیت پردازش‌ها
+        for i, future in enumerate(as_completed(futures), 1):
+            try:
+                future.result()  # برای گرفتن نتیجه و پردازش ارورها
+                render_progress(i, chunk_count)
+            except Exception as exc:
+                logger.error(f"Failed on {filename} part {i}: {exc}")
+
+    logger.info(f"{filename} completed.")
+
+
 # ===================== Main =======================
 def main() -> None:
     input_dir = sys.argv[1] if len(sys.argv) > 1 else INPUT_DIR
@@ -63,35 +104,8 @@ def main() -> None:
 
     logger.info(f"{len(text_files)} file(s) found.")
 
-    for file_index, filename in enumerate(text_files, start=1):
-        logger.info(f"Processing {filename} ({file_index}/{len(text_files)})")
-
-        input_path = os.path.join(input_dir, filename)
-        base_name = os.path.splitext(filename)[0]
-
-        with open(input_path, encoding="utf-8") as f:
-            text = clean_html(f.read())
-
-        chunk_count = estimate_chunk_count(text, MAX_PDF_MB)
-        chunk_size = math.ceil(len(text) / chunk_count)
-
-        for i in range(chunk_count):
-            start = i * chunk_size
-            end = min(start + chunk_size, len(text))
-            chunk_text = text[start:end]
-
-            output_pdf = os.path.join(
-                OUTPUT_DIR,
-                f"{base_name}_part{i + 1}.pdf",
-            )
-
-            try:
-                process_text_to_pdf(chunk_text, output_pdf, FONT_PATH)
-                render_progress(i + 1, chunk_count)
-            except Exception as exc:
-                logger.error(f"Failed on {filename} part {i + 1}: {exc}")
-
-        logger.info(f"{filename} completed.")
+    with ThreadPoolExecutor() as executor:
+        executor.map(process_file, text_files)
 
     logger.info("All files processed successfully.")
 

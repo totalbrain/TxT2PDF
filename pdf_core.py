@@ -4,7 +4,9 @@ import math
 import os
 from typing import List, Sequence, Union
 from typing_extensions import TypeAlias, Final, TypeGuard
+from defusedxml import defuse_stdlib
 from xml.sax.saxutils import escape
+defuse_stdlib()
 
 from reportlab.platypus import (
     Paragraph,
@@ -23,6 +25,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 import arabic_reshaper
 from bidi.algorithm import get_display
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ===================== Types =====================
 TextLike: TypeAlias = Union[str, bytes, bytearray, memoryview]
@@ -58,7 +61,6 @@ def shape_text(text: str) -> str:
 # ===================== Table =====================
 def parse_table(lines: Sequence[str]) -> List[List[str]]:
     rows: List[List[str]] = []
-
     for line in lines:
         if not line.strip().startswith("|"):
             continue
@@ -96,17 +98,15 @@ def process_text_to_pdf(
     output_path: str,
     font_path: str,
 ) -> None:
-    
     if not os.path.isfile(font_path):
         print(f"Font file not found: {font_path}")
         return
     else:
         print(f"Font file found: {font_path}")
-    
-    try:
-        pdfmetrics.getFont(FONT_NAME)
-    except KeyError:
-        pdfmetrics.registerFont(TTFont(FONT_NAME, font_path))
+        try:
+            pdfmetrics.getFont(FONT_NAME)
+        except KeyError:
+            pdfmetrics.registerFont(TTFont(FONT_NAME, font_path))
 
     style = ParagraphStyle(
         name="RTL",
@@ -122,16 +122,32 @@ def process_text_to_pdf(
     table_buffer: List[str] = []
     in_table = False
 
-    for line in lines:
-        stripped = line.strip()
+    # استفاده از ThreadPoolExecutor برای موازی‌سازی پردازش خطوط
+    with ThreadPoolExecutor() as executor:
+        futures = []
+        for line in lines:
+            stripped = line.strip()
 
-        if stripped.startswith("|"):
-            in_table = True
-            table_buffer.append(line)
-            continue
+            if stripped.startswith("|"):
+                in_table = True
+                table_buffer.append(line)
+                continue
 
-        if in_table:
-            table_data = parse_table(table_buffer)
+            if in_table:
+                futures.append(executor.submit(parse_table, table_buffer))
+                table_buffer.clear()
+                in_table = False
+
+            if stripped:
+                shaped = shape_text(line)
+                safe = safe_paragraph_text(shaped)
+                elements.append(Paragraph(safe, style))
+            else:
+                elements.append(Spacer(1, 8))
+
+        # پردازش نتیجه‌های جدول‌ها به صورت موازی
+        for future in as_completed(futures):
+            table_data = future.result()
             if table_data:
                 table = Table(table_data, hAlign="RIGHT")
                 table.setStyle(
@@ -145,16 +161,6 @@ def process_text_to_pdf(
                 )
                 elements.append(table)
                 elements.append(Spacer(1, 8))
-
-            table_buffer.clear()
-            in_table = False
-
-        if stripped:
-            shaped = shape_text(line)
-            safe = safe_paragraph_text(shaped)
-            elements.append(Paragraph(safe, style))
-        else:
-            elements.append(Spacer(1, 8))
 
     build_pdf(output_path, elements)
 
