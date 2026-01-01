@@ -55,13 +55,19 @@ def process_file(filename: str) -> None:
         text = clean_html(f.read())
 
     chunk_count = estimate_chunk_count(text, MAX_PDF_MB)
+
+    # Calculate appropriate chunk size
+    text_bytes = len(text.encode("utf-8"))
+    chunk_size_bytes = math.ceil(text_bytes / chunk_count)
+
+    # Convert back to character count (approximate)
     chunk_size = math.ceil(len(text) / chunk_count)
-    max_chunk_size = 50000
-    if chunk_size > max_chunk_size:
-        chunk_size = max_chunk_size
+
+    logger.info(
+        f"Processing {filename}: {text_bytes/1024/1024:.2f}MB in {chunk_count} chunk(s)")
 
     futures = []
-    with ThreadPoolExecutor(max_workers=4) as executor:  # Limit threads to 4 for stability
+    with ThreadPoolExecutor(max_workers=min(4, chunk_count)) as executor:
         for i in range(chunk_count):
             start = i * chunk_size
             end = min(start + chunk_size, len(text))
@@ -72,13 +78,14 @@ def process_file(filename: str) -> None:
                 f"{base_name}_part{i + 1}.pdf",
             )
 
-            # ارسال وظایف به تردها
-            futures.append(executor.submit(process_text_to_pdf, chunk_text, output_pdf, FONT_PATH))
+            # Submit chunk processing tasks
+            futures.append(executor.submit(process_text_to_pdf,
+                           chunk_text, output_pdf, FONT_PATH))
 
-        # مانیتورینگ وضعیت پردازش‌ها
+        # Monitor processing progress
         for i, future in enumerate(as_completed(futures), 1):
             try:
-                future.result()  # برای گرفتن نتیجه و پردازش ارورها
+                future.result()
                 render_progress(i, chunk_count)
             except Exception as exc:
                 logger.error(f"Failed on {filename} part {i}: {exc}")
