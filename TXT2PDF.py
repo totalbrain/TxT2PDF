@@ -38,11 +38,6 @@ def render_progress(current: int, total: int, width: int = 30) -> None:
         print()
 
 
-def clean_html(text: str) -> str:
-    text = re.sub(r'class="[^"]+"', '', text)
-    text = re.sub(r'id="[^"]+"', '', text)
-    text = re.sub(r'<[^>]+>', '', text)
-    return text
 
 
 # ===================== Main =======================
@@ -70,7 +65,7 @@ def main() -> None:
         base_name = os.path.splitext(filename)[0]
 
         with open(input_path, encoding="utf-8") as f:
-            text = clean_html(f.read())
+            text = f.read()
 
         chunk_count = estimate_chunk_count(text, MAX_PDF_MB)
         chunk_size = math.ceil(len(text) / chunk_count)
