@@ -1,0 +1,5 @@
+typing_extensions
+reportlab
+arabic-reshaper
+python-bidi
+defusedxml
