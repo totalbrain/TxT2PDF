@@ -1,25 +1,51 @@
 #!/usr/bin/env python3
 """
-Performance Testing Script for TXT2PDF
+Performance Benchmark Script for TXT2PDF
 
-Generates test files and measures conversion performance.
+- Generates test text files (Persian/Arabic + table samples).
+- Runs TXT->PDF conversion.
+- Logs timing and throughput results.
+
+Usage examples:
+  python benchmark.py
+  python benchmark.py --sizes 1 10 50 --workers 4
+  python benchmark.py --repeat 3 --cleanup
 """
 
-from TXT2PDF import process_file, INPUT_DIR, OUTPUT_DIR
+from __future__ import annotations
+
+import argparse
 import os
-import time
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
+import logging
+
+# Ensure the project directory is importable BEFORE importing project modules.
+PROJECT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(PROJECT_DIR))
+
+from app_logging import LoggingConfig, setup_logging  # noqa: E402
+from TXT2PDF import process_file  # noqa: E402
 
 
-def generate_test_file(size_mb: float, filename: str) -> str:
-    """Generate a test text file of specified size."""
+logger = logging.getLogger(__name__)
 
-    # Sample Persian/Arabic text
-    sample_lines = [
+
+@dataclass(frozen=True)
+class BenchmarkResult:
+    size_mb: float
+    elapsed_sec: float
+    throughput_mb_s: float
+    status: str
+
+
+def _sample_lines() -> list[str]:
+    # Includes normal RTL text + a simple markdown-like table to exercise parse_table().
+    return [
         "این یک متن تستی است برای بررسی عملکرد برنامه تبدیل متن به PDF.",
         "سیستم باید بتواند فایل‌های بزرگ را با سرعت بالا پردازش کند.",
         "این خط شامل متن طولانی‌تری است که برای تست شکل‌دهی متن RTL استفاده می‌شود.",
@@ -31,115 +57,230 @@ def generate_test_file(size_mb: float, filename: str) -> str:
         "پاراگراف جدید پس از جدول با محتوای بیشتر برای تست.",
     ]
 
-    os.makedirs(INPUT_DIR, exist_ok=True)
-    filepath = os.path.join(INPUT_DIR, filename)
+
+def generate_test_file(input_dir: Path, size_mb: float, filename: str) -> Path:
+    """
+    Generate a UTF-8 test file with approximately `size_mb` megabytes of content.
+    """
+    input_dir.mkdir(parents=True, exist_ok=True)
+    filepath = input_dir / filename
 
     target_bytes = int(size_mb * 1024 * 1024)
-    current_bytes = 0
+    written_bytes = 0
+    lines = _sample_lines()
 
-    with open(filepath, 'w', encoding='utf-8') as f:
-        while current_bytes < target_bytes:
-            for line in sample_lines:
-                f.write(line + '\n')
-                current_bytes += len(line.encode('utf-8')) + 1
-                if current_bytes >= target_bytes:
+    logger.info("Generating test file: %s (target=%.2fMB)", filepath.name, size_mb)
+
+    with filepath.open("w", encoding="utf-8", newline="\n") as f:
+        while written_bytes < target_bytes:
+            for line in lines:
+                f.write(line + "\n")
+                written_bytes += len((line + "\n").encode("utf-8"))
+                if written_bytes >= target_bytes:
                     break
 
-    actual_size = os.path.getsize(filepath) / (1024 * 1024)
-    print(f"✓ Generated {filename}: {actual_size:.2f}MB")
+    actual_size = filepath.stat().st_size / (1024 * 1024)
+    logger.info("Generated: %s (actual=%.2fMB)", filepath.name, actual_size)
     return filepath
 
 
-def run_performance_test():
-    """Run performance tests on different file sizes."""
+def _iter_generated_pdfs(output_dir: Path, base_name: str) -> Iterable[Path]:
+    # Matches TXT2PDF naming: <stem>_part<idx>.pdf
+    return output_dir.glob(f"{base_name}_part*.pdf")
 
-    print("=" * 60)
-    print("TXT2PDF Performance Test")
-    print("=" * 60)
 
-    test_cases = [
-        (1, "test_1mb.txt"),
-        (10, "test_10mb.txt"),
-        (50, "test_50mb.txt"),
-    ]
+def run_benchmark(
+    input_dir: Path,
+    output_dir: Path,
+    sizes: list[float],
+    *,
+    workers: int,
+    repeat: int,
+    cleanup: bool,
+) -> list[BenchmarkResult]:
+    """
+    Run the benchmark across multiple file sizes.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    results = []
+    results: list[BenchmarkResult] = []
 
-    for size_mb, filename in test_cases:
-        print(f"\n{'─' * 60}")
-        print(f"Test: {filename} ({size_mb}MB)")
-        print(f"{'─' * 60}")
+    logger.info("=" * 70)
+    logger.info("TXT2PDF Benchmark")
+    logger.info("Input dir:  %s", input_dir)
+    logger.info("Output dir: %s", output_dir)
+    logger.info("Sizes (MB): %s", sizes)
+    logger.info("Repeat:     %d", repeat)
+    logger.info("Workers:    %d", workers)
+    logger.info("=" * 70)
 
-        # Generate test file
-        filepath = generate_test_file(size_mb, filename)
+    for size_mb in sizes:
+        filename = f"test_{int(size_mb)}mb.txt"
+        input_path = generate_test_file(input_dir, size_mb, filename)
+        base_name = input_path.stem
 
-        # Measure conversion time
-        start_time = time.time()
+        # Optional: remove old PDFs for a clean run
+        for old_pdf in _iter_generated_pdfs(output_dir, base_name):
+            try:
+                old_pdf.unlink()
+            except OSError:
+                logger.warning("Could not delete old pdf: %s", old_pdf.name)
 
-        try:
-            process_file(filename)
-            elapsed = time.time() - start_time
+        logger.info("-" * 70)
+        logger.info("Test case: %s (%.2fMB)", input_path.name, size_mb)
+        logger.info("-" * 70)
 
-            # Calculate throughput
-            throughput = size_mb / elapsed if elapsed > 0 else 0
+        for run_idx in range(1, repeat + 1):
+            start = time.perf_counter()
+            try:
+                # process_file signature is (input_path: Path, output_dir: Path, ...)
+                process_file(
+                    input_path,
+                    output_dir,
+                    max_workers=workers,
+                )
+                elapsed = time.perf_counter() - start
+                throughput = (size_mb / elapsed) if elapsed > 0 else 0.0
 
-            results.append({
-                'size': size_mb,
-                'time': elapsed,
-                'throughput': throughput,
-                'status': 'SUCCESS'
-            })
+                results.append(
+                    BenchmarkResult(
+                        size_mb=size_mb,
+                        elapsed_sec=elapsed,
+                        throughput_mb_s=throughput,
+                        status=f"SUCCESS (run {run_idx}/{repeat})",
+                    )
+                )
 
-            print(f"\n✓ Completed in {elapsed:.2f}s ({throughput:.2f} MB/s)")
+                logger.info(
+                    "Run %d/%d: %.2fs | %.2f MB/s",
+                    run_idx,
+                    repeat,
+                    elapsed,
+                    throughput,
+                )
+            except Exception as exc:
+                elapsed = time.perf_counter() - start
+                results.append(
+                    BenchmarkResult(
+                        size_mb=size_mb,
+                        elapsed_sec=elapsed,
+                        throughput_mb_s=0.0,
+                        status=f"FAILED (run {run_idx}/{repeat}): {exc}",
+                    )
+                )
+                logger.exception("Benchmark failed: %s", input_path.name)
 
-        except Exception as e:
-            elapsed = time.time() - start_time
-            results.append({
-                'size': size_mb,
-                'time': elapsed,
-                'throughput': 0,
-                'status': f'FAILED: {e}'
-            })
-            print(f"\n✗ Failed after {elapsed:.2f}s: {e}")
-
-    # Print summary
-    print(f"\n{'=' * 60}")
-    print("Summary")
-    print(f"{'=' * 60}")
-    print(f"{'Size':<10} {'Time':<12} {'Throughput':<15} {'Status'}")
-    print(f"{'─' * 60}")
+    logger.info("=" * 70)
+    logger.info("Summary")
+    logger.info("=" * 70)
+    logger.info("%-10s %-12s %-16s %s", "Size", "Time", "Throughput", "Status")
+    logger.info("-" * 70)
 
     for r in results:
-        status = r['status']
-        if status == 'SUCCESS':
-            print(f"{r['size']:>4}MB    {r['time']:>6.2f}s      "
-                  f"{r['throughput']:>6.2f} MB/s    {status}")
-        else:
-            print(f"{r['size']:>4}MB    {r['time']:>6.2f}s      "
-                  f"{'N/A':<13}  {status}")
+        size_label = f"{int(r.size_mb)}MB"
+        time_label = f"{r.elapsed_sec:.2f}s"
+        thr_label = f"{r.throughput_mb_s:.2f} MB/s" if r.throughput_mb_s > 0 else "N/A"
+        logger.info("%-10s %-12s %-16s %s", size_label, time_label, thr_label, r.status)
 
-    print(f"{'=' * 60}\n")
+    logger.info("=" * 70)
 
-    # Cleanup
-    if input("Delete test files? (y/n): ").lower() == 'y':
-        for _, filename in test_cases:
+    if cleanup:
+        logger.info("Cleanup enabled: deleting generated test files and PDFs...")
+        for size_mb in sizes:
+            filename = f"test_{int(size_mb)}mb.txt"
+            input_path = input_dir / filename
+            base_name = input_path.stem
+
             try:
-                os.remove(os.path.join(INPUT_DIR, filename))
-                # Also remove generated PDFs
-                base_name = os.path.splitext(filename)[0]
-                for pdf_file in Path(OUTPUT_DIR).glob(f"{base_name}_part*.pdf"):
+                if input_path.exists():
+                    input_path.unlink()
+            except OSError:
+                logger.warning("Could not delete test file: %s", input_path.name)
+
+            for pdf_file in _iter_generated_pdfs(output_dir, base_name):
+                try:
                     pdf_file.unlink()
-                print(f"✓ Deleted {filename} and its PDFs")
-            except Exception as e:
-                print(f"✗ Error deleting {filename}: {e}")
+                except OSError:
+                    logger.warning("Could not delete pdf: %s", pdf_file.name)
+
+    return results
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="TXT2PDF performance benchmark")
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        default=Path("input_txt"),
+        help="Directory to write generated test .txt files",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("output_pdf"),
+        help="Directory where PDFs are written",
+    )
+    parser.add_argument(
+        "--sizes",
+        type=float,
+        nargs="*",
+        default=[1, 10, 50],
+        help="List of test sizes in MB (e.g., --sizes 1 10 50)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Max worker threads for chunk rendering per file",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="Repeat each test case N times",
+    )
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Delete generated test files and PDFs after benchmark",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=os.getenv("LOG_LEVEL", "INFO"),
+        help="Logging level (default: env LOG_LEVEL or INFO)",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    # Central logging configuration (compatible with app_logging.py)
+    setup_logging(
+        LoggingConfig(
+            level=str(args.log_level).upper(),
+            log_file="benchmark.log",
+            # Benchmark is often run standalone; forcing avoids surprises if re-run in same process.
+            force_reconfigure=True,
+        )
+    )
+
+    run_benchmark(
+        input_dir=args.input_dir,
+        output_dir=args.output_dir,
+        sizes=list(args.sizes),
+        workers=args.workers,
+        repeat=args.repeat,
+        cleanup=args.cleanup,
+    )
 
 
 if __name__ == "__main__":
     try:
-        run_performance_test()
+        main()
     except KeyboardInterrupt:
-        print("\n\nTest interrupted by user.")
-    except Exception as e:
-        print(f"\n\nTest failed with error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.info("Benchmark interrupted by user.")
+    except Exception:
+        logger.exception("Benchmark failed unexpectedly.")
+        raise
