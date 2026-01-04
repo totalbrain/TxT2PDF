@@ -7,9 +7,10 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
+
 from typing_extensions import Final
 
-from app_logging import LoggingConfig, setup_logging, render_progress
+from app_logging import LoggingConfig, render_progress, setup_logging
 from pdf_core import estimate_chunk_count, process_text_to_pdf
 
 
@@ -19,18 +20,20 @@ DEFAULT_INPUT_DIR: Final[Path] = Path("input_txt")
 DEFAULT_OUTPUT_DIR: Final[Path] = Path("output_pdf")
 MAX_PDF_MB: Final[int] = 10
 
-
 logger = logging.getLogger(__name__)
 
 
 def _iter_txt_files(input_dir: Path) -> list[Path]:
-    # طراحی پروژه: non-recursive (همون رفتار قبلی)
-    return sorted([p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() == ".txt"])
+    # Design choice: non-recursive scanning (matches legacy behavior).
+    return sorted(
+        [p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() == ".txt"]
+    )
 
 
 def _split_text_into_chunks(text: str, chunk_count: int) -> Iterable[str]:
     """
-    Chunking عمداً deterministic و ساده نگه داشته شده (slicing بر اساس character index).
+    Chunking is intentionally deterministic and simple:
+    we slice the text by character index to create `chunk_count` segments.
     """
     if chunk_count <= 1:
         yield text
@@ -42,8 +45,8 @@ def _split_text_into_chunks(text: str, chunk_count: int) -> Iterable[str]:
         end = min(start + chunk_size, len(text))
         yield text[start:end]
 
-# ===================== Processing =================
 
+# ===================== Processing =================
 def process_file(
     input_path: Path,
     output_dir: Path,
@@ -68,11 +71,14 @@ def process_file(
             chunk_count,
             filename,
         )
+
         output_dir.mkdir(parents=True, exist_ok=True)
 
         futures = []
         with ThreadPoolExecutor(max_workers=min(max_workers, chunk_count)) as executor:
-            for idx, chunk_text in enumerate(_split_text_into_chunks(text, chunk_count), start=1):
+            for idx, chunk_text in enumerate(
+                _split_text_into_chunks(text, chunk_count), start=1
+            ):
                 output_pdf = output_dir / f"{base_name}_part{idx}.pdf"
 
                 futures.append(
@@ -81,16 +87,24 @@ def process_file(
                         chunk_text,
                         str(output_pdf),
                         str(font_path),
+                        # Attach context so logs are traceable per file/chunk.
+                        source_file=filename,
+                        chunk_id=idx,
                     )
                 )
 
-            # progress روی completed futures
+            # Update progress based on completed futures (not submission order).
             for done_count, future in enumerate(as_completed(futures), start=1):
                 try:
                     future.result()
                 except Exception:
-                    # لاگ کامل stacktrace + ادامه‌ی پردازش سایر chunkها
-                    logger.exception("Chunk failed | file=%s part=%d", filename, done_count)
+                    # Log full traceback but continue processing remaining chunks.
+                    logger.exception(
+                        "Chunk failed | file=%s completed=%d/%d",
+                        filename,
+                        done_count,
+                        chunk_count,
+                    )
 
                 render_progress(done_count, chunk_count, logger=logger)
 
@@ -106,7 +120,7 @@ def process_file(
 
 # ===================== Main =======================
 def main() -> None:
-    # --- logging فقط همینجا کانفیگ می‌شود ---
+    # Configure logging only here (entrypoint).
     setup_logging(
         LoggingConfig(
             level=os.getenv("LOG_LEVEL", "INFO"),
@@ -132,12 +146,12 @@ def main() -> None:
 
     logger.info("Discovered %d file(s) in %s", len(files), input_dir)
 
-    # اجرای فایل‌ها (دقت: nested executors داریم؛ پس outer رو خیلی بزرگ نکن)
+    # We have nested executors (file-level and chunk-level). Keep outer pool small.
     outer_workers = min(4, len(files))
     with ThreadPoolExecutor(max_workers=outer_workers) as executor:
         futures = [executor.submit(process_file, p, output_dir) for p in files]
         for f in as_completed(futures):
-            # اگر process_file خودش exception غیرمنتظره بده (نباید بده)، اینجا هم لاگ می‌گیریم
+            # If `process_file` unexpectedly raises, log it here.
             try:
                 f.result()
             except Exception:
