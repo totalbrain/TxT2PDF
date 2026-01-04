@@ -1,9 +1,3 @@
-
-
-This document reflects **the current Dev reality + intentional constraints**, and is suitable as a **technical spec, internal reference, or basis for stabilization and release**.
-
----
-
 # TxT2PDF (Dev Branch)
 
 ## Comprehensive Technical Documentation
@@ -21,6 +15,7 @@ The scope is intentionally limited to:
 * Architectural design and rationale
 * Internal processing logic
 * CLI execution model
+* Logging, observability, and concurrency behavior
 * Known limitations and edge cases
 * Explicit design trade-offs and non-goals
 
@@ -88,16 +83,16 @@ Feature richness is explicitly deprioritized in favor of robustness.
 
 ### 4.1 Conceptual Processing Pipeline
 
-```
+```text
 Input TXT File
    ↓
-Safe File Reader (encoding-aware)
+Safe File Reader (UTF-8)
    ↓
 Chunk Size Estimation
    ↓
 Chunk Splitting
    ↓
-Line-by-Line Rendering
+Parallel Chunk Rendering
    ↓
 PDF Builder (ReportLab)
    ↓
@@ -106,7 +101,7 @@ Output PDF File(s)
 
 ---
 
-### 4.2 Important Behavioral Note (Dev Branch)
+### 4.2 Behavioral Characteristics (Dev Branch)
 
 In the current Dev implementation:
 
@@ -114,7 +109,7 @@ In the current Dev implementation:
 * **Each chunk produces an independent PDF file**
 * There is **no shared document state** between chunks
 
-This is a deliberate design choice to ensure stability and parallelism.
+This is a deliberate design choice to ensure stability, bounded memory usage, and safe parallelism.
 
 ---
 
@@ -126,7 +121,7 @@ This is a deliberate design choice to ensure stability and parallelism.
 * No semantic interpretation of content
 * No transformation or preprocessing
 * Fail-fast behavior on critical errors
-* Explicit control over resource usage
+* Explicit control over concurrency and resources
 
 ---
 
@@ -146,7 +141,7 @@ To mitigate this, TxT2PDF uses **adaptive chunking**.
 
 #### Current Dev Behavior
 
-* File size is estimated using character count and byte size
+* File size is estimated using UTF-8 byte length
 * A chunk count is calculated dynamically
 * Each chunk is capped to a safe upper size
 * Chunks are rendered **independently**
@@ -167,27 +162,27 @@ This trade-off is **intentional and accepted**.
 
 ---
 
-## 6. Concurrency Model
+## 6. Concurrency & Logging Model
 
-### 6.1 Parallel Execution
+### 6.1 Concurrency Model
 
-TxT2PDF supports **controlled multithreading**:
+* File-level parallelism in `TXT2PDF.py`
+* Chunk-level parallelism per file via `ThreadPoolExecutor`
+* Rendering logic itself avoids nested executors
+* No shared mutable state across threads
 
-* Multiple chunks may be rendered in parallel
-* Thread count is bounded to avoid oversubscription
-* Each chunk is isolated from others
-
-Concurrency is applied at the **task level**, not at the document layout level.
+This minimizes race conditions and oversubscription.
 
 ---
 
-### 6.2 Implications
+### 6.2 Logging & Observability
 
-* Improves throughput on multi-core systems
-* Simplifies error isolation
-* Requires careful logging for observability
+* Centralized logging via `app_logging.py`
+* Root logger configured once at application entrypoint
+* Console + rotating file handlers
+* Progress logging is **throttled** (time + percentage based)
 
-Parallelism is a **performance optimization**, not a functional requirement.
+Progress reporting is based on **completed futures**, not task submission.
 
 ---
 
@@ -204,12 +199,12 @@ Parallelism is a **performance optimization**, not a functional requirement.
 
 ### 7.2 Right-to-Left (RTL) Support
 
-#### Current Capabilities (Dev Branch)
+#### Current Capabilities
 
 * Arabic / Persian text shaping
 * Bidirectional reordering
 * Right-aligned paragraph rendering
-* Unicode-safe text handling
+* Unicode-safe escaping for ReportLab
 
 RTL support is implemented **at the paragraph level**.
 
@@ -221,7 +216,7 @@ RTL support is implemented **at the paragraph level**.
 * Punctuation and mixed-direction text may render incorrectly
 * ReportLab is not natively bidi-aware
 
-RTL support should be considered **partial and experimental**.
+RTL behavior should be considered **partial and experimental**.
 
 ---
 
@@ -248,63 +243,47 @@ pip install -r requirements.txt
 
 ### 8.3 Execution
 
-Convert files from the default input directory:
+Default execution:
 
 ```bash
 python TXT2PDF.py
 ```
 
-Specify a custom input directory:
+Custom input/output directories:
 
 ```bash
-python TXT2PDF.py /path/to/txt/files
+python TXT2PDF.py /path/to/input /path/to/output
 ```
-
----
-
-### 8.4 Output
-
-* Output PDFs are written to `output_pdf/`
-* Large files generate multiple PDFs
-* File naming follows a deterministic pattern
 
 ---
 
 ## 9. Known Issues & Edge Cases
 
-### 9.1 Large File Edge Cases (High Priority)
+### 9.1 Large File Edge Cases
 
-* Chunk boundary alignment issues
-* Trailing newline handling
-* Last chunk processing requires careful validation
+* Chunk boundaries may split lines
+* Trailing newline handling is sensitive
+* Final chunk must be validated carefully
 
 ---
 
 ### 9.2 Progress Bar Perception
 
 **Symptom:**
-Progress reaches 100% but process does not exit immediately.
+Progress reaches 100% but the process does not exit immediately.
 
 **Cause:**
 Final PDF rendering and I/O flushing occur after progress completion.
 
-This is expected behavior but requires clearer logging.
+This is expected behavior and is logged explicitly.
 
 ---
 
 ### 9.3 Encoding Sensitivity
 
 * UTF-8 is assumed
-* Mixed or legacy encodings may fail
+* Mixed or legacy encodings may fail early
 * Manual encoding override is not yet supported
-
----
-
-### 9.4 RTL Rendering Issues
-
-* Word order issues in certain contexts
-* Incorrect punctuation direction
-* Table rendering limitations
 
 ---
 
@@ -312,41 +291,33 @@ This is expected behavior but requires clearer logging.
 
 ### 10.1 No Text Preprocessing
 
-**Decision:**
-TxT2PDF does not clean, normalize, or modify text.
+**Decision:** No cleaning, normalization, or transformation.
 
-**Reason:**
-Text preprocessing introduces ambiguity and hidden behavior.
+**Reason:** Avoid hidden behavior and ambiguity.
 
 ---
 
 ### 10.2 No Full RTL Layout Engine
 
-**Decision:**
-Full RTL layout is out of scope.
+**Decision:** Full RTL layout is out of scope.
 
-**Reason:**
-Requires a fundamentally different rendering pipeline.
+**Reason:** Requires a fundamentally different rendering pipeline.
 
 ---
 
-### 10.3 CLI-First Design
+### 10.3 CLI-First Architecture
 
-**Decision:**
-TxT2PDF is CLI-first, not a library.
+**Decision:** CLI-first, not library-first.
 
-**Roadmap:**
-Extraction of a reusable core library is planned but not yet implemented.
+**Roadmap:** Core extraction is possible but not yet planned.
 
 ---
 
 ### 10.4 No Single-PDF Streaming (Dev Branch)
 
-**Decision:**
-Each chunk produces an independent PDF.
+**Decision:** Each chunk produces an independent PDF.
 
-**Trade-off:**
-Stability and predictability over document continuity.
+**Trade-off:** Stability and predictability over document continuity.
 
 ---
 
@@ -354,25 +325,22 @@ Stability and predictability over document continuity.
 
 * Optional single-PDF streaming mode
 * Configurable chunk size
-* Improved logging and observability
+* Improved structured logging
 * Encoding detection and override
 * Formal unit and stress tests
-* Clearer RTL boundaries and documentation
+* Clearer RTL documentation and guarantees
 
 ---
 
 ## 12. Conclusion
 
-**TxT2PDF (Dev Branch)** is a **pragmatic, stability-oriented tool** designed for converting raw text into PDF under real-world constraints.
+**TxT2PDF (Dev Branch)** is a pragmatic, stability-oriented system for converting raw text into PDF under real-world constraints.
 
-The project deliberately avoids:
+By deliberately avoiding content interpretation and text mutation, the project delivers:
 
-* Content interpretation
-* Text modification
-* Feature-heavy document semantics
+* Predictable behavior
+* Bounded resource usage
+* Clear failure modes
+* Maintainable and auditable code
 
-In doing so, it provides a **reliable and maintainable foundation** for large-scale, automated text-to-PDF conversion workflows.
-
----
-
-**This document is a living technical reference and should evolve alongside the codebase.**
+This document reflects the **current Dev reality** and should evolve alongside the codebase.
